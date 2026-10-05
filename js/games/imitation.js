@@ -247,6 +247,7 @@
     }
     async function handshake(link, guess) {
       api.status('Opponent found!', 'Connecting…');
+      await wait(1500 + Math.random() * 1500); // no match ever connects instantly
       const roll = Math.random();
       link.send({ t: 'hello', name: myName, roll });
       const hello = await new Promise((res, rej) => {
