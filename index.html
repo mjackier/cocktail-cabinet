@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cocktail Cabinet</title>
+  <meta name="description" content="Seven arcade games. Either side can be played by a human or the computer.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='3' fill='%2307060d'/><circle cx='8' cy='8' r='4' fill='%23ff4d6d'/></svg>">
+</head>
+<body>
+  <div class="cabinet">
+    <header class="marquee">
+      <a href="#" class="logo"><span>COCKTAIL</span> <span>CABINET</span></a>
+      <p class="tag">Seven games. Two sides. A human or the computer on either one.</p>
+      <button id="mute" class="btn ghost small" type="button">Sound: on</button>
+    </header>
+
+    <main>
+      <section id="menu-wrap">
+        <div id="menu" class="menu"></div>
+        <p class="hint">Pick a game. Each one lets you play the classic side, the flipped side, both sides with a friend, or sit back and watch the computer play itself.</p>
+      </section>
+
+      <section id="play" hidden>
+        <div class="bar">
+          <a class="btn ghost" href="#">◀ Cabinet</a>
+          <h2 id="title"></h2>
+        </div>
+        <div class="layout">
+          <div class="screen-wrap">
+            <div class="bezel">
+              <canvas id="screen" width="800" height="600" tabindex="0" aria-label="Game screen"></canvas>
+              <div id="overlay" hidden></div>
+            </div>
+          </div>
+          <aside id="panel" class="panel"></aside>
+        </div>
+      </section>
+    </main>
+
+    <footer>Plain HTML, CSS and JavaScript. Imitation's online matches connect browsers directly with WebRTC (PeerJS).</footer>
+  </div>
+
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+  <script src="js/core.js"></script>
+  <script src="js/games/snake.js"></script>
+  <script src="js/games/breakout.js"></script>
+  <script src="js/games/splat.js"></script>
+  <script src="js/games/asteroids.js"></script>
+  <script src="js/games/missile.js"></script>
+  <script src="js/games/imitation.js"></script>
+  <script src="js/games/tetris.js"></script>
+  <script src="js/net.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
