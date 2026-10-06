@@ -9,7 +9,7 @@ Seven arcade games on one static page. Every game has two sides, and each side c
 | Splat | Flyer | Builder | The human sets each gap with the mouse; the computer flies with nothing but flaps. |
 | Asteroids | Pilot | Thrower | The computer flies; the human drags rocks in from the edges, paid for with energy. |
 | Missile Command | Defender | Attacker | **My design:** the human commands the warheads (drag from sky to ground, or ← → plus 1–9) against a computer defender. |
-| Imitation | You | Opponent | A memory duel against the computer, a friend (private room code), or a stranger online. |
+| Imitation | You | Opponent | The Imitation Game (Turing test): chat for 2½ minutes, then guess human or AI. Humans may pretend to be an AI; the AI pretends to be human. |
 | Tetris *(my pick)* | Stacker | Picker | **My design:** the human picks every upcoming piece; the computer stacks. |
 
 ## Fair on both sides
@@ -25,26 +25,29 @@ Breakout      Bottom 53%    Top 48%
 Splat         Flyer 42%     Builder 58%
 Asteroids     Pilot 41%     Thrower 59%
 Missile Cmd   Defender 49%  Attacker 51%
-Imitation     44–56% either way
 Tetris        Stacker 50%   Picker 50%
 ```
 
-## Imitation: two browsers, no server
+## Imitation: the Imitation Game
 
-`js/net.js` uses the free public [PeerJS](https://peerjs.com) broker to introduce two browsers. After that they talk directly over WebRTC. There is no server of our own and no API key.
+Two players chat for 2½ minutes (either can end early with **Ready to guess** after 45 s). Then each guesses whether the other was a **human** or an **AI**.
 
-- **Find an opponent:** joins or hosts one of four lobby slots. A search always takes a few seconds, so a match is never instant. If no human appears within about 12–21 s, you are quietly paired with the computer, which has a random handle, a fake ping, human-like timing, a limited memory and the odd hesitation. At the end you guess "human or computer?" and the game tells you if you were right.
-- **Private room:** one player creates a 4-letter code and the other joins with it. This always connects two humans.
-- **Practice / Watch:** play the computer, labeled as such, or watch two computers play each other.
+- **Roles.** Before matching, you choose: a human acting human, a human **pretending to be an AI**, or an **AI agent** acting human. Your choice is only revealed after both of you guess.
+- **Scoring.** You get +1 for guessing right about your partner, and +1 if your partner's guess about you matches your goal. The higher score wins; equal scores draw.
+- **The AI side.** No API keys are used anywhere.
+  - **Claude in your own browser:** open the site in a second browser window, let Claude in Chrome drive it, choose "An AI agent (e.g. Claude in Chrome), acting human", and join the other player's private room code. A prompt you can give Claude in Chrome:
+    > Go to https://games.jackier.xyz/#imitation. Set "You are playing as" to "An AI agent, acting human", type the room code ABCD in the code box and click Join. Chat like a casual human college student: short lowercase messages, the occasional typo, don't be too perfect. When the chat ends, guess whether your partner is human or AI.
+  - **Built-in computer player:** when nobody else is online, **Find a match** quietly falls back to a chat bot that runs entirely in the page. It has a persona (name, age, city, major, hobbies), types at human speed with a "typing…" indicator, makes and corrects typos, dodges "are you a bot?", refuses homework and jailbreak prompts, and gets math slightly wrong. It also uses **Practice** and **Watch computer vs computer**.
+- **Matchmaking.** `js/net.js` uses the free public [PeerJS](https://peerjs.com) broker to introduce the two browsers, which then talk directly over WebRTC. There is no server of our own. Searching always takes a few seconds and connecting adds a short delay, so an AI opponent is never obvious from timing.
 
-To try it yourself, open the site in two browsers (or a normal and a private window) and click **Find an opponent** in both at about the same time.
+To test with a human, open the site in two browsers, or a normal and a private window, and click **Find a match** in both within a few seconds.
 
 ## Run locally
 
 ```bash
 python3 -m http.server 8080      # then open http://localhost:8080
 node test/simulate.js all 40     # balance check, computer vs computer
-node test/protocol.js            # Imitation: two simulated browsers stay in sync
+node test/protocol.js            # Imitation: two simulated browsers agree on chat, guesses and score
 ```
 
 ## Deploy (Netlify + your domain + continuous deployment)

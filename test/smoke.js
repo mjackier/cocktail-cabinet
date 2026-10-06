@@ -24,15 +24,21 @@ const path = require('path');
     await page.goto(base + '/#' + id);
     await page.waitForTimeout(300);
     if (id === 'imitation') {
+      await page.selectOption('#imi-role', 'human-ai');
       await page.click('[data-m="practice"]');
       await page.waitForTimeout(400);
       await page.screenshot({ path: path.join(out, id + '-matchmaking.png') });
-      await page.waitForTimeout(3600);
-      // Play a few correct-ish presses with the keyboard.
-      for (let i = 0; i < 12; i++) { await page.keyboard.press(['ArrowUp', 'ArrowRight', 'ArrowDown', 'ArrowLeft'][i % 4]); await page.waitForTimeout(250); }
-      await page.screenshot({ path: path.join(out, id + '-play.png') });
+      await page.waitForSelector('.chat-form input', { timeout: 6000 });
+      for (const line of ['hey', 'are you a bot?', 'what do you do for fun']) {
+        await page.fill('.chat-form input', line); await page.keyboard.press('Enter'); await page.waitForTimeout(6000);
+      }
+      const replies = await page.$$eval('.msg.them', (ms) => ms.map((m) => m.textContent));
+      console.log('imitation  practice  bot replied:', JSON.stringify(replies));
+      if (!replies.length) errors.push('Imitation bot never replied');
+      await page.screenshot({ path: path.join(out, id + '-chat.png') });
+      await page.goto(base + '/#imitation'); await page.waitForTimeout(300);
       await page.click('[data-m="watch"]');
-      await page.waitForTimeout(6000);
+      await page.waitForTimeout(15000);
       await page.screenshot({ path: path.join(out, id + '-watch.png') });
       continue;
     }

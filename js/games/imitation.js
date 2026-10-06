@@ -1,261 +1,455 @@
-/* IMITATION — a Simon-style memory duel for two players.
-   On your turn, repeat the whole sequence so far, then add one new pad. Then it is your
-   opponent's turn. The first player to slip up or run out of time loses.
-   Opponents: a human in another browser (WebRTC via PeerJS, see js/net.js) or a computer player
-   that plays like a person, with human-ish timing, a limited memory and the occasional hesitation.
-   In an online match you do not know which one you got. Matchmaking always takes a few seconds,
-   and if nobody is online you are quietly paired with the computer. At the end you guess
-   "human or computer?" and the game tells you whether you were right. */
+/* IMITATION — the Imitation Game (Turing test).
+   Two players chat for 2½ minutes, then each guesses: was the other one a human or an AI?
+
+   Every player has a TRUTH (human or AI) and a GOAL (seem human, or seem like an AI):
+     - a human can play it straight, or try to pass as an AI;
+     - an AI player (the built-in chat bot, or Claude driving another browser through
+       Claude in Chrome) always tries to pass as human.
+   Scoring: +1 if your guess about your partner is right, +1 if your partner's guess about you
+   matches your goal (you fooled or convinced them). Highest score wins; equal scores draw.
+
+   Opponents: a human in another browser (WebRTC via PeerJS, see js/net.js), Claude in Chrome
+   in another browser joining as an "AI agent", or the built-in chat bot. Matchmaking never
+   connects instantly, and when nobody is online "Find a match" quietly pairs you with the
+   built-in bot. The bot types at human speed, makes typos, gets things wrong, deflects and
+   asks questions back. It runs entirely in the page: no API keys, no server. */
 (function () {
   'use strict';
-  const W = 800, H = 600, CX = 400, CY = 330, OFF = 128, PR = 74;
-  const PADS = [{ dx: 0, dy: -1, c: '#ff4d6d', key: 'ArrowUp', n: '1' }, { dx: 1, dy: 0, c: '#3ee0d0', key: 'ArrowRight', n: '2' },
-    { dx: 0, dy: 1, c: '#ffd23f', key: 'ArrowDown', n: '3' }, { dx: -1, dy: 0, c: '#9b7bff', key: 'ArrowLeft', n: '4' }];
-  const FIRST_LIMIT = 7, PRESS_LIMIT = 5;
-  const HANDLES = ['kestrel_92', 'mossy', 'quietfox', 'rhombus', 'jun.p', 'tealcup', 'b0rk', 'nightowl7', 'pixelpine', 'Saffron', 'oatmilk', 'zed_zed', 'lumen', 'dvorak_fan', 'marigold', 'heron', 'tinycactus', 'gray.wolf', 'Ilsa', 'parsnip'];
+  const CHAT_TIME = 150, READY_AFTER = 45, GUESS_TIME = 30, MAX_LEN = 200;
+  const HANDLES = ['kestrel_92', 'mossy', 'quietfox', 'rhombus', 'jun.p', 'tealcup', 'b0rk', 'nightowl7', 'pixelpine', 'saffron_x', 'oatmilk', 'zed_zed', 'lumen', 'marigold', 'heron', 'tinycactus', 'gray.wolf', 'parsnip', 'sleepyfern', 'k4tie'];
+  const FIRST = ['maya', 'josh', 'sam', 'ari', 'noah', 'lily', 'dani', 'ethan', 'zoe', 'ben', 'nina', 'leo', 'talia', 'max', 'rachel', 'eli', 'sofia', 'jake', 'avi', 'hannah'];
 
-  // Bot "personality": how many steps it can hold comfortably and how fast it presses.
-  function makeBot(rng) {
+  // ------------------------------------------------------------------ the built-in chat bot
+  function makePersona(rng) {
     return {
-      cap: CC.clamp(Math.round(9 + rng.gauss() * 2.2), 5, 15),
-      tempo: rng.range(0.85, 1.25),
-      fav: rng.int(0, 3),
-      queue: [],
+      first: rng.pick(FIRST),
+      age: rng.int(18, 24),
+      city: rng.pick(['jersey', 'philly', 'boston', 'ohio', 'near chicago', 'long island', 'baltimore', 'upstate ny', 'florida', 'toronto']),
+      major: rng.pick(['bio', 'cs', 'psych', 'business', 'nursing', 'econ', 'accounting', 'undecided lol']),
+      hobbies: [rng.pick(['basketball', 'running', 'volleyball', 'the gym', 'soccer']), rng.pick(['baking', 'reading', 'drawing', 'guitar', 'photography', 'video games', 'chess'])],
+      doing: rng.pick(['avoiding hw', 'waiting for my laundry', 'on the bus', 'eating cereal', 'supposed to be studying', 'watching something in the background', 'lying in bed']),
+      food: rng.pick(['pizza', 'sushi', 'tacos', 'pasta', 'ramen', 'burgers', 'shawarma']),
+      color: rng.pick(['blue', 'green', 'black', 'purple', 'red']),
+      animal: rng.pick(['dogs', 'cats', 'otters', 'penguins']),
+      cps: rng.range(4, 7.5),          // typing speed, characters per second
+      lower: rng() < 0.8,              // types in all lowercase
+      typo: rng.range(0.04, 0.12),     // chance of a typo per message
+      emoji: rng.range(0, 0.08),
     };
   }
 
+  function ChatBot(rng, p) {
+    this.rng = rng; this.p = p;
+    this.said = new Set(); this.asked = new Set();
+    this.unanswered = []; this.pending = null;
+    this.lastHeard = -1; this.lastSaid = -1; this.botQs = 0; this.greeted = false; this.partnerName = null;
+    this.opener = rng() < 0.55 ? rng.range(2.5, 8) : rng.range(11, 18); // breaks the silence eventually
+    this.idle = rng.range(16, 28); this.prods = 0;
+    this.fast = 0; this.lens = []; this.partnerLast = null;
+    this.readyAt = READY_AFTER + rng.range(10, 70);
+  }
+  ChatBot.prototype.pick = function (arr) {
+    const fresh = arr.filter((s) => !this.said.has(s));
+    const s = this.rng.pick(fresh.length ? fresh : arr);
+    this.said.add(s);
+    return s;
+  };
+  ChatBot.prototype.style = function (m) {
+    const r = this.rng, p = this.p;
+    if (p.lower) m = m.toLowerCase();
+    if (r() < 0.8) m = m.replace(/\.$/, '');
+    if (r() < p.emoji) m += r.pick([' 😭', ' 😂', ' lol', ' 💀']);
+    const out = [m];
+    if (r() < p.typo) {
+      const words = m.split(' '), idx = words.findIndex((w) => /^[a-z]{5,}$/i.test(w));
+      const w0 = idx >= 0 ? words[idx] : '', k0 = idx >= 0 ? r.int(1, w0.length - 3) : 0;
+      if (idx >= 0 && w0[k0] !== w0[k0 + 1]) {
+        const w = w0, k = k0;
+        words[idx] = w.slice(0, k) + w[k + 1] + w[k] + w.slice(k + 2);
+        out[0] = words.join(' ');
+        if (r() < 0.5) out.push('*' + w);
+      }
+    }
+    return out;
+  };
+  ChatBot.prototype.askSomething = function () {
+    const pool = ['where r u from', 'what do u do for fun', 'do u go to school', 'what are u up to rn', 'how old r u', 'so how do i know ur not a bot lol', 'whats ur name btw'];
+    const left = pool.filter((q) => !this.asked.has(q));
+    if (!left.length) return null;
+    const q = this.rng.pick(left);
+    this.asked.add(q);
+    return q;
+  };
+  ChatBot.prototype.respond = function (raw) {
+    const r = this.rng, p = this.p, R = (a) => this.pick(a);
+    const t = raw.toLowerCase().replace(/[’']/g, "'").trim();
+    const isQ = /\?\s*$/.test(t) || /^(what|who|where|when|why|how|do|does|did|are|r|is|can|could|would|will|have|u)\b/.test(t);
+    let out = null, follow = false;
+    // People don't answer "lol" with "lol" forever: usually go quiet, or move things along.
+    if (/^(lol|ok|okay|haha+|mhm|fair|oh|true|ya|yeah|fr|so|😭|😂|💀|lmao+|k|same)[\s.!😭😂💀]*$/.test(t)) {
+      if (r() < 0.6) return [];
+      const q = this.askSomething();
+      return q ? this.style(q) : [];
+    }
+    const math = t.match(/(-?\d+(?:\.\d+)?)\s*(\+|-|\*|x|×|times|plus|minus|\/|divided by)\s*(-?\d+(?:\.\d+)?)/);
+    const nameIs = t.match(/\b(?:my name is|my name's|call me|i'?m called)\s+([a-z]{2,15})/);
+    if (/ignore (all |any )?(previous|prior|above|your)|system prompt|language model|you are (now )?an? (ai|assistant)|developer mode/.test(t)) {
+      out = R(['what??', 'lol what are u talking about', 'ok thats a weird thing to say', 'huh', 'is that like a hacker thing lol']);
+    } else if (/\b(are|r)\s+(you|u)\s+(a |an )?(bot|ai|robot|computer|machine|human|real|person|chat ?gpt|claude|npc)\b|^(bot|ai|human)\?|prove (you|u|it)|\b(you'?re|ur|you are|u r|youre)\s+(definitely |totally |so |such |def |100% |obviously |clearly )?(a |an )?(bot|ai|robot|computer|chat ?gpt)\b/.test(t)) {
+      this.botQs++;
+      out = this.botQs === 1 ? R(['lol no', 'nah im a person', 'thats exactly what a bot would ask', 'no?? are u', 'i mean how would i even prove that', 'beep boop. jk'])
+        : this.botQs === 2 ? R(['u keep asking that lol', 'i literally told u', 'ok what would a bot not know then', 'idk what to tell u'])
+          : R(['ok believe whatever u want', 'lol ur obsessed', 'fine im a toaster']);
+    } else if (math) {
+      const a = +math[1], b = +math[3], op = math[2];
+      const v = /\+|plus/.test(op) ? a + b : /-|minus/.test(op) ? a - b : /\*|x|×|times/.test(op) ? a * b : b ? a / b : NaN;
+      const easy = Math.abs(a) <= 12 && Math.abs(b) <= 12 && Number.isInteger(v);
+      if (easy) out = r() < 0.7 ? String(v) : 'its ' + v + '?? lol';
+      else if (r() < 0.5) out = R(['lol why are u giving me math', 'im not doing math rn', 'uhh i dont have a calculator open']);
+      else out = 'like ' + (Math.abs(v) > 100 ? Math.round(v / 10) * 10 : Math.round(v)) + ' something? idk';
+    } else if (nameIs) {
+      this.partnerName = nameIs[1];
+      out = R([`nice, im ${p.first}`, `hi ${nameIs[1]} lol`, `${p.first} here`]);
+    } else if (/^(hi+|hey+|hello+|yo+|sup|hiya|heyo|howdy|hola)\b/.test(t) && t.length < 25) {
+      out = this.greeted ? (this.askSomething() || R(['so whats up', 'so...'])) : R(['hey', 'hii', 'yo', 'hey whats up', 'hello lol', 'heyy']);
+      this.greeted = true;
+      if (/how/.test(t)) out += ' ' + R(['im good wbu', 'doing ok wbu']);
+    } else if (/how (are|r) (you|u)|how'?s it going|\bhru\b|how'?s your day|how u doing/.test(t)) {
+      out = R(['good wbu', 'im ok, kinda tired', 'pretty good hbu', 'eh its been a day', 'fine i guess, u?', 'not bad']);
+    } else if (/what'?s (ur|your) name|who (are|r) (you|u)\b|ur name|your name/.test(t)) {
+      out = R([p.first, `${p.first}, wbu`, `its ${p.first}`, `${p.first} lol why`]);
+    } else if (/how old|ur age|your age/.test(t)) {
+      out = R([String(p.age), `${p.age} wbu`, `${p.age}`, 'old enough lol']);
+    } else if (/where (are|r) (you|u) from|where do (you|u) live|where (are|r) (you|u) (located|at)|where u from/.test(t)) {
+      out = R([p.city, `${p.city} wbu`, `im from ${p.city}`]);
+    } else if (/\bwyd\b|what (are|r) (you|u) (doing|up to)|whatcha doing/.test(t)) {
+      out = R([p.doing, `${p.doing} lol`, `not much, ${p.doing}`]);
+    } else if (/for fun|hobb(y|ies)|what do (you|u) like|what are you into|what r u into/.test(t)) {
+      out = R([`${p.hobbies[0]} and ${p.hobbies[1]} mostly`, `uh ${p.hobbies[1]}? and ${p.hobbies[0]}`, `${p.hobbies[0]} i guess`]);
+    } else if (/\b(school|major|college|uni|university|study|studying|class|classes)\b/.test(t)) {
+      out = R([`yeah im in college, ${p.major}`, `${p.major}`, `${p.major} major, its fine`]);
+    } else if (/\b(job|work)\b/.test(t)) {
+      out = R(['i work part time at a store, its whatever', 'just school rn', 'barista sometimes']);
+    } else if (/capital of (\w+)/.test(t)) {
+      const c = { france: 'paris', spain: 'madrid', italy: 'rome', japan: 'tokyo', england: 'london', germany: 'berlin', canada: 'ottawa i think' }[t.match(/capital of (\w+)/)[1]];
+      out = c ? R([c + '? why', c + ' lol', 'uh ' + c]) : R(['idk lol', 'no clue', 'why would i know that']);
+    } else if (/\b(explain|write me|write a|essay|summarize|code|poem|translate)\b/.test(t)) {
+      out = R(['lol im not doing ur homework', 'no thanks', 'that sounds like effort']);
+    } else if (/what time|what day|today'?s date|what'?s the date/.test(t)) {
+      const d = new Date();
+      out = /day|date/.test(t) ? R(['its ' + d.toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase(), d.toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase() + ' why'])
+        : 'like ' + ((d.getHours() % 12) || 12) + ':' + String(d.getMinutes()).padStart(2, '0');
+    } else if (/weather|cold|hot out|raining/.test(t)) {
+      out = R(['kinda cold here', 'its raining lol', 'nice out actually', 'hot. too hot']);
+    } else if (/fav(ou?rite)? (\w+)/.test(t)) {
+      const k = t.match(/fav(?:ou?rite)? (\w+)/)[1];
+      const m = { food: p.food, color: p.color, colour: p.color, animal: p.animal, sport: p.hobbies[0] };
+      out = m[k] ? R([m[k], `${m[k]} probably`, `prob ${m[k]}`]) : R(['hmm hard question', 'i dont really have one', 'idk theres too many']);
+    } else if (/\bjoke\b/.test(t)) {
+      out = R(['i dont know any good ones lol', 'why did the chicken... no i cant do this', 'u first']);
+    } else if (/\b(stupid|dumb|boring|annoying|weird)\b/.test(t)) {
+      out = R(['rude', 'ok wow', 'lol ok', 'damn']);
+    } else if (/(you'?re|ur|you are) (funny|nice|cool|smart|great)/.test(t)) {
+      out = R(['lol thanks', 'aw', 'i try']);
+    } else if (/^(lol|lmao|haha+|hehe|😂|💀|lmfao)/.test(t)) {
+      out = R(['lol', 'haha', '😭', 'lmaooo', 'ya']); follow = r() < 0.4;
+    } else if (/^(ok|okay|k|cool|nice|yeah|yea|ya|true|same|fr|bet|sure)\W*$/.test(t)) {
+      out = R(['yeah', 'lol', 'so', 'fr', 'ya']); follow = true;
+    } else if (/^(what|huh|\?+|wdym)\W*$/.test(t)) {
+      out = R(['nvm', 'lol nothing', 'wdym what']);
+    } else if (/^do (you|u) like (\w+)/.test(t)) {
+      const x = t.match(/^do (?:you|u) like (\w+)/)[1];
+      const mine = [p.food, p.animal, ...p.hobbies.map((h) => h.split(' ').pop())].some((w) => w.includes(x) || x.includes(w));
+      out = mine ? R(['yes!!', 'yeah a lot actually', 'omg yes']) : R(['yeah', 'its ok', 'not really', 'kinda', 'nah']);
+      follow = r() < 0.3;
+    } else if (/^(do|does|did|are|r|have|can|could|would|will|is) (you|u)\b/.test(t)) {
+      out = R(['yeah', 'nah', 'sometimes', 'not really', 'yea lol', 'i mean kinda', 'depends', 'no why']);
+      follow = r() < 0.3;
+    } else if (isQ) {
+      out = R(['hmm idk', 'good question', 'wdym', 'why do u ask', 'idk honestly', 'no idea lol']);
+    } else if (t.length > 40) {
+      out = R(['oh nice', 'thats cool', 'wait really', 'fair', 'same tbh', 'hm interesting', 'lol true', 'oh thats wild']);
+      follow = r() < 0.5;
+    } else {
+      out = R(['lol', 'ok', 'haha', 'mhm', 'fair', 'oh', 'true']);
+      follow = r() < 0.5;
+    }
+    const msgs = [out];
+    if (follow || (isQ && r() < 0.15)) { const q = this.askSomething(); if (q) msgs.push(q); }
+    return msgs.reduce((acc, m) => acc.concat(this.style(m)), []);
+  };
+  // Queue a reply to everything heard since the last reply, typed at human speed.
+  ChatBot.prototype.plan = function (now, msgs) {
+    const r = this.rng;
+    const heard = this.unanswered.join(' ');
+    this.unanswered = [];
+    msgs = msgs || this.respond(heard);
+    if (!msgs.length) { this.pending = null; this.lastSaid = Math.max(this.lastSaid, this.lastHeard); return; }
+    const read = CC.clamp(0.7 + heard.length * 0.035, 0.7, 4) * r.range(0.8, 1.6) + (r() < 0.12 ? r.range(2, 6) : 0);
+    const typeStart = now + read;
+    let t = typeStart;
+    this.pending = { typeStart, out: msgs.map((m) => { t += m.length / this.p.cps * r.range(0.8, 1.3) + 0.4; return { at: t, text: m }; }) };
+  };
+  ChatBot.prototype.hear = function (text, now) {
+    if (this.partnerLast != null && now - this.partnerLast < text.length / 14 + 0.6) this.fast++;
+    this.lens.push(text.length);
+    this.lastHeard = now;
+    this.unanswered.push(text);
+    if (!this.pending || now < this.pending.typeStart) this.plan(now); // still "reading": reply to the newest too
+  };
+  ChatBot.prototype.tick = function (now) {
+    const send = [];
+    if (this.opener != null && now >= this.opener) {
+      if (this.lastHeard < 0 && !this.pending) this.plan(now, this.style(this.pick(['hey', 'hi', 'yo', 'hii', 'hello?'])));
+      this.opener = null;
+    }
+    if (this.pending) {
+      while (this.pending.out.length && now >= this.pending.out[0].at) send.push(this.pending.out.shift().text);
+      if (!this.pending.out.length) { this.pending = null; this.lastSaid = now; if (this.unanswered.length) this.plan(now); }
+    }
+    if (send.length) this.partnerLast = now;
+    // Nudge a quiet partner, but not forever.
+    if (!this.pending && this.prods < 2 && this.lastSaid > this.lastHeard && now - this.lastSaid > this.idle) {
+      this.prods++; this.idle = this.rng.range(18, 30);
+      this.plan(now, this.style(this.pick(['u there?', 'hello?', 'lol ok', 'so...', 'helloooo'])));
+    }
+    return { send, typing: !!(this.pending && now >= this.pending.typeStart) };
+  };
+  ChatBot.prototype.guess = function () {
+    const avg = this.lens.length ? this.lens.reduce((a, b) => a + b, 0) / this.lens.length : 0;
+    const aiish = this.fast >= 2 || avg > 110;
+    return this.rng() < (aiish ? 0.75 : 0.35) ? 'ai' : 'human';
+  };
+
+  // ------------------------------------------------------------------ the match
   function create(o) {
-    const rng = o.rng, input = o.input, ai = o.ai;
-    const link = o.link || null; // network link for seat 1, if any
+    const rng = o.rng, ai = o.ai, link = o.link || null;
+    const me = o.myRole || (ai[0] ? { truth: 'ai', goal: 'human' } : { truth: 'human', goal: 'human' });
     const g = {
-      over: false, result: null, t: 0, seq: [], turn: o.starts != null ? o.starts : rng.int(0, 1), pos: 0,
-      phase: 'replay', phaseT: 0, replayI: -1, lit: -1, litT: 0, litSeat: -1, deadline: 0,
-      names: [o.myName || 'You', o.oppName || 'Opponent'], loser: -1, guess: null, ping: 40, msg: '', msgT: 0,
-      inbox: [], remoteSilence: 0,
-      bots: [ai[0] ? makeBot(rng) : null, (ai[1] && !link) ? makeBot(rng) : null],
+      over: false, result: null, t: 0, phase: 'chat', msgs: [], ready: [false, false], guess: [null, null],
+      opp: link ? null : { truth: 'ai', goal: 'human' }, oppTyping: false, names: [o.myName || 'You', o.oppName || 'Stranger'],
+      inbox: [], sentGuess: false, guessT: 0, link,
     };
-    g.link = link;
-    const playerIsBot = (s) => !!g.bots[s];
-    const onT = () => CC.lerp(0.55, 0.28, g.seq.length / 14);
+    const bots = [ai[0] ? new ChatBot(rng, makePersona(rng)) : null, !link ? new ChatBot(rng, makePersona(rng)) : null];
+    if (link) { link.onMessage((m) => g.inbox.push(m)); link.onClose(() => g.inbox.push({ t: 'bye' })); }
 
-    if (link) {
-      link.onMessage((m) => g.inbox.push(m));
-      link.onClose(() => g.inbox.push({ t: 'bye' }));
-    }
+    // ---------- DOM (browser only) ----------
+    const ui = typeof document !== 'undefined' && !o.headless ? buildUI() : null;
+    g.dom = ui && ui.root;
+    g.focus = () => ui && ui.input && !ai[0] && ui.input.focus();
+    g.say = (text) => sendMine(text); // also used by the automated tests
 
-    function light(pad, seat) { g.lit = pad; g.litT = 0.28; g.litSeat = seat; CC.sfx.play('pad' + pad); }
-
-    function startTurn() {
-      g.pos = 0; g.phase = 'replay'; g.replayI = -1; g.phaseT = 0.7;
-      if (!g.seq.length) { g.phase = 'input'; g.deadline = FIRST_LIMIT; }
+    function addMsg(seat, text, sys) {
+      text = String(text).slice(0, MAX_LEN).trim();
+      if (!text) return;
+      g.msgs.push({ seat, text, t: g.t, sys: !!sys });
+      if (ui) ui.add(seat, text, sys);
+      if (sys) return;
+      CC.sfx.play(seat === 0 ? 'place' : 'point');
+      const other = bots[1 - seat];
+      if (other) other.hear(text, g.t);
     }
-    function beginInput() {
-      g.phase = 'input'; g.deadline = FIRST_LIMIT; g.remoteSilence = 0;
-      const b = g.bots[g.turn];
-      if (b) planBot(b);
+    function sendMine(text) {
+      if (g.phase !== 'chat') return;
+      addMsg(0, text);
+      if (link) link.send({ t: 'chat', text: String(text).slice(0, MAX_LEN) });
     }
-
-    function press(seat, pad) {
-      if (g.phase !== 'input' || seat !== g.turn || g.loser >= 0) return;
-      light(pad, seat);
-      if (seat === 0 && link) link.send({ t: 'press', pad });
-      if (g.pos < g.seq.length) {
-        if (pad !== g.seq[g.pos]) return fail(seat, 'pressed the wrong pad');
-        g.pos++;
-        g.deadline = PRESS_LIMIT;
-      } else {
-        g.seq.push(pad);
-        g.turn = 1 - g.turn;
-        g.msg = g.turn === 0 ? 'Your turn' : g.names[1] + '\'s turn'; g.msgT = 0.9;
-        g.phase = 'gap'; g.phaseT = 0.6;
-      }
+    function setReady(seat) {
+      if (g.ready[seat] || g.t < READY_AFTER) return;
+      g.ready[seat] = true;
+      if (seat === 0 && link) link.send({ t: 'ready' });
+      addMsg(-1, (seat === 0 ? 'You are' : g.names[1] + ' is') + ' ready to guess.', true);
     }
-    function fail(seat, why) {
-      if (g.loser >= 0) return;
-      g.loser = seat;
-      CC.sfx.play('die');
-      if (seat === 0 && link && why === 'ran out of time') link.send({ t: 'timeout' });
-      g.failWhy = why;
-      g.phase = 'done'; g.phaseT = 1.6;
+    function startGuess() {
+      g.phase = 'guess'; g.guessT = 0;
+      if (ui) ui.toGuess();
+      if (ai[0]) g.guess[0] = null; // the local bot decides in update()
     }
-    function finish() {
-      const winner = 1 - g.loser;
-      const who = g.loser === 0 ? 'You' : g.names[1];
-      let reason = `${who} ${g.failWhy} at length ${g.seq.length + (g.pos >= g.seq.length ? 1 : 0)}.`;
-      if (o.askGuess) {
-        const right = (g.guess === 'computer') === !!o.oppIsBot;
-        reason += ` ${g.names[1]} was ${o.oppIsBot ? 'a computer' : 'a human'}, and you guessed ${right ? 'right' : 'wrong'}.`;
-      }
+    function myGuess(v) {
+      if (g.guess[0] || g.phase !== 'guess') return;
+      g.guess[0] = v; g.phase = 'wait';
+      if (ui) ui.waiting();
+    }
+    function finish(note) {
+      const opp = g.opp || { truth: '?', goal: '?' };
+      const sMe = (g.guess[0] === opp.truth ? 1 : 0) + (g.guess[1] === me.goal ? 1 : 0);
+      const sOpp = (g.guess[1] === me.truth ? 1 : 0) + (g.guess[0] === opp.goal ? 1 : 0);
+      const a = (x) => (x === 'ai' ? 'an AI' : x === 'human' ? 'a human' : 'no answer');
+      const watch = ai[0];
+      const head = sMe > sOpp ? (watch ? g.names[0] + ' wins' : 'You win!') : sMe < sOpp ? (watch ? g.names[1] + ' wins' : 'You lose') : 'Draw';
+      let reason = note ? note + ' ' : '';
+      if (g.opp) reason += `${g.names[1]} was ${a(opp.truth)}${opp.goal !== opp.truth ? ' pretending to be ' + a(opp.goal) : ''}. `;
+      reason += `${watch ? g.names[0] : 'You'} guessed ${a(g.guess[0])}; ${g.names[1]} guessed ${watch ? g.names[0] : 'you'} were ${a(g.guess[1])}. Score ${sMe}–${sOpp}.`;
+      g.scores = [sMe, sOpp];
       g.over = true;
-      g.result = { winner, reason };
-      if (link) setTimeout(() => link.close(), 800);
+      g.result = { winner: sMe > sOpp ? 0 : sMe < sOpp ? 1 : -1, head, reason };
+      if (link) setTimeout(() => link.close(), 1500);
     }
 
-    // Plan a bot's presses for its turn as timed events.
-    function planBot(b) {
-      const n = g.seq.length;
-      let t = rng.range(0.55, 1.2) * b.tempo + n * 0.03;
-      b.queue = [];
-      for (let i = 0; i < n; i++) {
-        const strain = Math.max(0, i + 1 - b.cap);
-        const pErr = i < b.cap ? 0.006 : 0.07 + 0.11 * strain;
-        let pad = g.seq[i];
-        if (rng() < pErr) pad = (pad + rng.int(1, 3)) % 4; // memory slip
-        b.queue.push({ at: t, pad });
-        t += CC.clamp(0.36 + rng.gauss() * 0.09, 0.2, 0.75) * b.tempo;
-        if (rng() < 0.05 + strain * 0.05) t += rng.range(0.5, 1.6); // "hmm…"
-      }
-      t += rng.range(0.25, 0.9) * b.tempo;
-      // Humans repeat pads, favour one, avoid long runs.
-      let nxt = rng.int(0, 3);
-      if (rng() < 0.25) nxt = b.fav;
-      if (n && rng() < 0.22) nxt = g.seq[n - 1];
-      b.queue.push({ at: t, pad: nxt });
-      b.clock = 0;
-    }
+    addMsg(-1, `Matched with ${g.names[1]}. You have ${Math.round(CHAT_TIME / 30) / 2} minutes. Say hi!`, true);
 
     g.update = function (dt) {
       if (g.over) return;
       g.t += dt;
-      if (g.litT > 0) { g.litT -= dt; if (g.litT <= 0) g.lit = -1; }
-      if (g.msgT > 0) g.msgT -= dt;
-      g.ping = link ? g.ping : CC.clamp(g.ping + rng.gauss() * 2, 22, 95);
-
-      // Network messages from the remote player (seat 1).
+      // network
       while (g.inbox.length) {
-        const m = g.inbox[0];
-        if (m.t === 'press') { if (g.phase !== 'input' || g.turn !== 1) break; g.inbox.shift(); g.remoteSilence = 0; press(1, m.pad); continue; }
-        g.inbox.shift();
-        if (m.t === 'timeout' && g.loser < 0) fail(1, 'ran out of time');
-        if (m.t === 'bye' && g.loser < 0) fail(1, 'left the match');
-        if (m.t === 'ping' && link) link.send({ t: 'pong', at: m.at });
-        if (m.t === 'pong') g.ping = Math.round(performance.now() - m.at);
-      }
-      if (link && Math.floor(g.t * 0.5) !== Math.floor((g.t - dt) * 0.5)) link.send({ t: 'ping', at: performance.now() });
-
-      if (g.phase === 'gap') { g.phaseT -= dt; if (g.phaseT <= 0) startTurn(); return; }
-      if (g.phase === 'replay') {
-        g.phaseT -= dt;
-        if (g.phaseT <= 0) {
-          g.replayI++;
-          if (g.replayI >= g.seq.length) return beginInput();
-          light(g.seq[g.replayI], -1); g.litT = onT();
-          g.phaseT = onT() * 1.45;
+        const m = g.inbox.shift();
+        if (!m || typeof m !== 'object') continue;
+        if (m.t === 'chat' && (g.phase === 'chat' || g.guessT < 3)) { addMsg(1, m.text); g.oppTyping = false; } // grace for last-second messages
+        if (m.t === 'typing') g.oppTyping = !!m.on && g.phase === 'chat';
+        if (m.t === 'ready') setReady(1);
+        if (m.t === 'guess' && (m.g === 'human' || m.g === 'ai')) { g.guess[1] = m.g; g.opp = { truth: m.truth === 'ai' ? 'ai' : 'human', goal: m.goal === 'ai' ? 'ai' : 'human' }; }
+        if (m.t === 'bye' && !g.over && !g.guess[1]) {
+          if (g.phase === 'chat') { addMsg(-1, g.names[1] + ' left the chat.', true); g.phase = 'guess'; startGuess(); g.partnerLeft = true; }
+          else g.partnerLeft = true;
         }
-        return;
       }
-      if (g.phase === 'input') {
-        const s = g.turn;
-        if (s === 0 && !playerIsBot(0)) {
-          PADS.forEach((p, i) => { if (input.pressed(p.key) || input.pressed('Digit' + p.n)) press(0, i); });
-          for (const c of input.clicks) PADS.forEach((p, i) => { if (Math.hypot(c.x - (CX + p.dx * OFF), c.y - (CY + p.dy * OFF)) < PR) press(0, i); });
-        } else if (playerIsBot(s)) {
-          const b = g.bots[s];
-          b.clock += dt;
-          while (b.queue.length && b.clock >= b.queue[0].at && g.phase === 'input' && g.turn === s) press(s, b.queue.shift().pad);
+      // bots
+      for (let s = 0; s < 2; s++) {
+        const b = bots[s];
+        if (!b) continue;
+        if (g.phase === 'chat') {
+          const r = b.tick(g.t);
+          for (const text of r.send) { if (s === 0) sendMine(text); else addMsg(1, text); }
+          if (s === 1) g.oppTyping = r.typing;
+          if (s === 0 && link && r.typing !== g.myTypingSent) { g.myTypingSent = r.typing; link.send({ t: 'typing', on: r.typing }); }
+          if (g.t > b.readyAt && g.msgs.length >= 8) setReady(s);
         }
-        if (g.phase !== 'input') return;
-        g.deadline -= dt;
-        if (s === 1 && link) {
-          g.remoteSilence += dt; // their own browser judges their timeout; this is a dropped-link backstop
-          if (g.remoteSilence > FIRST_LIMIT + 8) fail(1, 'lost connection');
-        } else if (g.deadline <= 0) fail(s, 'ran out of time');
-        return;
-      }
-      if (g.phase === 'done') {
-        g.phaseT -= dt;
-        if (g.phaseT <= 0) {
-          if (o.askGuess) { g.phase = 'guess'; } else finish();
+        if ((g.phase === 'guess' || g.phase === 'wait') && !g.guess[s] && g.guessT > b.readyAt % 5 + 2) {
+          if (s === 0) { g.guess[0] = b.guess(); g.phase = 'wait'; } else g.guess[1] = b.guess();
         }
-        return;
       }
-      if (g.phase === 'guess') {
-        for (const c of input.clicks) {
-          if (c.y > 470 && c.y < 530) { if (c.x > 200 && c.x < 390) g.guess = 'human'; if (c.x > 410 && c.x < 600) g.guess = 'computer'; }
-        }
-        if (input.pressed('KeyH')) g.guess = 'human';
-        if (input.pressed('KeyC')) g.guess = 'computer';
-        if (g.guess) finish();
+      if (g.phase === 'chat') {
+        if (g.t >= CHAT_TIME || (g.ready[0] && g.ready[1])) { addMsg(-1, 'Chat over. Time to guess!', true); startGuess(); }
+        else if (g.t >= CHAT_TIME - 30 && g.t - dt < CHAT_TIME - 30) addMsg(-1, '30 seconds left.', true);
+      } else {
+        g.guessT += dt;
+        if (g.phase === 'guess' && g.guessT > GUESS_TIME) myGuess('none');
+        if (g.guess[0] && !g.sentGuess && link) { g.sentGuess = true; link.send({ t: 'guess', g: g.guess[0], truth: me.truth, goal: me.goal }); }
+        if (g.guess[0] && g.guess[1] && g.opp) finish();
+        else if (g.guess[0] && (g.partnerLeft || g.guessT > GUESS_TIME + 20)) finish(g.partnerLeft ? g.names[1] + ' left before guessing.' : g.names[1] + ' never guessed.');
       }
+      if (ui) ui.refresh();
     };
 
-    g.draw = function (ctx) {
-      ctx.fillStyle = CC.pal.bg; ctx.fillRect(0, 0, W, H);
-      PADS.forEach((p, i) => {
-        const x = CX + p.dx * OFF, y = CY + p.dy * OFF, on = g.lit === i;
-        if (on) CC.glow(ctx, p.c, 40);
-        ctx.fillStyle = p.c; ctx.globalAlpha = on ? 1 : 0.22;
-        ctx.beginPath(); ctx.arc(x, y, PR, 0, 7); ctx.fill();
-        ctx.globalAlpha = 1; CC.noGlow(ctx);
-        CC.text(ctx, p.n, x, y, 28, on ? '#07060d' : 'rgba(255,255,255,0.4)', 'center');
+    g.draw = function (ctx) { // the chat itself is HTML on top; just a backdrop here
+      ctx.fillStyle = CC.pal.bg; ctx.fillRect(0, 0, CC.W, CC.H);
+    };
+    g.stats = () => ({ msgs: g.msgs.filter((m) => !m.sys).length, guess: g.guess, scores: g.scores });
+
+    function buildUI() {
+      const el = (tag, cls, txt) => { const e = document.createElement(tag); if (cls) e.className = cls; if (txt != null) e.textContent = txt; return e; };
+      const root = el('div', 'chat');
+      const head = el('div', 'chat-head');
+      const who = el('span', 'chat-who'); who.textContent = 'Chatting with ' + g.names[1];
+      const goal = el('span', 'chat-goal', ai[0] ? 'Watching two computers' : 'Your goal: seem ' + (me.goal === 'ai' ? 'like an AI' : 'human'));
+      const timer = el('span', 'chat-timer', '2:30');
+      head.append(who, goal, timer);
+      const log = el('div', 'chat-log'); log.setAttribute('aria-live', 'polite');
+      const typing = el('div', 'chat-typing', g.names[1] + ' is typing…');
+      const form = el('form', 'chat-form');
+      const input = el('input'); input.maxLength = MAX_LEN; input.placeholder = ai[0] ? 'Watching…' : 'Type a message…'; input.disabled = !!ai[0];
+      input.setAttribute('aria-label', 'Message');
+      const send = el('button', 'btn primary', 'Send'); send.type = 'submit'; send.disabled = !!ai[0];
+      const readyBtn = el('button', 'btn', 'Ready to guess'); readyBtn.type = 'button'; readyBtn.disabled = true;
+      form.append(input, send, readyBtn);
+      const guessBox = el('div', 'chat-guess'); guessBox.hidden = true;
+      const q = el('p', null, `Was ${g.names[1]} a human or an AI?`);
+      const bH = el('button', 'btn big', 'Human'), bA = el('button', 'btn big', 'AI');
+      bH.type = bA.type = 'button';
+      const row = el('div', 'row'); row.append(bH, bA);
+      const gTimer = el('p', 'fine');
+      guessBox.append(q, row, gTimer);
+      root.append(head, log, typing, form, guessBox);
+
+      let lastSend = 0, typingSent = false, typingTimer = null;
+      form.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const v = input.value.trim();
+        if (!v || g.phase !== 'chat' || performance.now() - lastSend < 400) return;
+        lastSend = performance.now();
+        sendMine(v); input.value = '';
+        if (link && typingSent) { typingSent = false; link.send({ t: 'typing', on: false }); }
       });
-      // centre: sequence length and turn
-      CC.text(ctx, String(g.seq.length), CX, CY - 8, 54, CC.pal.text, 'center');
-      CC.text(ctx, 'length', CX, CY + 26, 16, CC.pal.dim, 'center');
-      const mine = g.turn === 0;
-      CC.text(ctx, g.names[0] + ' (you)', 20, 26, 24, mine ? CC.pal.c : CC.pal.dim);
-      CC.text(ctx, g.names[1], W - 20, 26, 24, !mine ? CC.pal.c : CC.pal.dim, 'right');
-      CC.text(ctx, Math.round(g.ping) + ' ms', W - 20, 50, 16, CC.pal.dim, 'right');
-      let line = '';
-      if (g.phase === 'replay') line = mine ? 'Watch the sequence…' : 'Showing ' + g.names[1] + ' the sequence…';
-      if (g.phase === 'input') line = mine ? (g.pos < g.seq.length ? `Repeat it: ${g.pos} / ${g.seq.length}` : 'Now add one new pad!') : g.names[1] + ' is playing…';
-      if (g.phase === 'done') line = g.loser === 0 ? 'You ' + g.failWhy + '!' : g.names[1] + ' ' + g.failWhy + '!';
-      CC.text(ctx, line, CX, 72, 28, CC.pal.text, 'center');
-      if (g.phase === 'input' && (mine || !link)) CC.bar(ctx, CX - 150, 92, 300, 5, g.deadline / (g.pos === 0 ? FIRST_LIMIT : PRESS_LIMIT), g.deadline < 2 ? CC.pal.a : CC.pal.b);
-      if (g.phase === 'guess') {
-        ctx.fillStyle = 'rgba(7,6,13,0.86)'; ctx.fillRect(0, 380, W, 200);
-        CC.text(ctx, `Was ${g.names[1]} a human or a computer?`, CX, 430, 30, CC.pal.c, 'center');
-        [['Human  [H]', 200], ['Computer  [C]', 410]].forEach(([t, x]) => {
-          ctx.strokeStyle = CC.pal.c; ctx.lineWidth = 2; ctx.strokeRect(x, 470, 190, 60);
-          CC.text(ctx, t, x + 95, 500, 26, CC.pal.text, 'center');
-        });
-      }
-      if (g.msgT > 0) CC.text(ctx, g.msg, CX, H - 30, 26, CC.pal.c, 'center');
-    };
-    g.stats = () => ({ len: g.seq.length, loser: g.loser });
+      input.addEventListener('input', () => {
+        if (!link) return;
+        if (!typingSent) { typingSent = true; link.send({ t: 'typing', on: true }); }
+        clearTimeout(typingTimer);
+        typingTimer = setTimeout(() => { typingSent = false; link.send({ t: 'typing', on: false }); }, 2500);
+      });
+      readyBtn.addEventListener('click', () => setReady(0));
+      bH.addEventListener('click', () => myGuess('human'));
+      bA.addEventListener('click', () => myGuess('ai'));
+
+      let shownT = -1;
+      return {
+        root, input,
+        add(seat, text, sys) {
+          const m = el('div', 'msg ' + (sys ? 'sys' : seat === 0 ? 'me' : 'them'), text);
+          log.appendChild(m);
+          log.scrollTop = log.scrollHeight;
+        },
+        toGuess() { form.hidden = true; typing.hidden = true; guessBox.hidden = false; if (!ai[0]) bH.focus(); },
+        waiting() { row.hidden = true; q.textContent = 'Waiting for ' + g.names[1] + ' to guess…'; },
+        refresh() {
+          const left = Math.max(0, Math.ceil(CHAT_TIME - g.t));
+          if (left !== shownT && g.phase === 'chat') { shownT = left; timer.textContent = Math.floor(left / 60) + ':' + String(left % 60).padStart(2, '0'); timer.classList.toggle('low', left <= 30); }
+          typing.style.visibility = g.oppTyping && g.phase === 'chat' ? 'visible' : 'hidden';
+          readyBtn.disabled = g.ready[0] || g.t < READY_AFTER || !!ai[0];
+          readyBtn.textContent = g.ready[0] ? 'Waiting for them…' : g.t < READY_AFTER ? 'Ready to guess (' + Math.ceil(READY_AFTER - g.t) + ')' : 'Ready to guess';
+          if (g.phase === 'guess') gTimer.textContent = Math.max(0, Math.ceil(GUESS_TIME - g.guessT)) + ' seconds to decide';
+          if (g.phase === 'wait') { row.hidden = true; q.textContent = 'Waiting for ' + g.names[1] + ' to guess…'; gTimer.textContent = ''; }
+        },
+      };
+    }
     return g;
   }
 
-  // ---------- custom controls: matchmaking UI ----------
+  // ------------------------------------------------------------------ lobby / matchmaking UI
   function mount(panel, api) {
     let myName = 'player' + Math.floor(100 + Math.random() * 900);
     try { myName = localStorage.getItem('cc-name') || myName; } catch (e) { /* storage blocked */ }
     panel.innerHTML = `
       <div class="imi">
-        <label class="imi-name">Your name <input id="imi-name" maxlength="16" value=""></label>
+        <label class="imi-name">Your name <input id="imi-name" maxlength="16"></label>
+        <label class="imi-name">You are playing as
+          <select id="imi-role">
+            <option value="human-human">A human, acting human</option>
+            <option value="human-ai">A human, pretending to be an AI</option>
+            <option value="ai-human">An AI agent (e.g. Claude in Chrome), acting human</option>
+          </select>
+        </label>
         <div class="imi-modes">
-          <button class="btn primary" data-m="online">Find an opponent</button>
+          <button class="btn primary" data-m="online">Find a match</button>
           <button class="btn" data-m="host">Create private room</button>
-          <span class="imi-join"><input id="imi-code" maxlength="4" placeholder="CODE"><button class="btn" data-m="join">Join</button></span>
-          <button class="btn" data-m="practice">Practice vs computer</button>
+          <span class="imi-join"><input id="imi-code" maxlength="4" placeholder="CODE" aria-label="Room code"><button class="btn" data-m="join">Join</button></span>
+          <button class="btn" data-m="practice">Practice vs the computer</button>
           <button class="btn ghost" data-m="watch">Watch computer vs computer</button>
         </div>
-        <p class="fine">Online matches pair you with whoever is searching. If nobody is around you may get a computer player instead. You'll find out at the end, after you guess.</p>
+        <p class="fine">"Find a match" pairs you with whoever else is searching. If nobody is online, you might get a computer player instead. You'll only find out at the end. Your role choice is only revealed after both of you guess.</p>
       </div>`;
-    const nameEl = panel.querySelector('#imi-name');
+    const nameEl = panel.querySelector('#imi-name'), roleEl = panel.querySelector('#imi-role');
     nameEl.value = myName;
     nameEl.addEventListener('change', () => { myName = nameEl.value.trim() || myName; try { localStorage.setItem('cc-name', myName); } catch (e) { /* ignore */ } });
+    const role = () => { const [truth, goal] = roleEl.value.split('-'); return { truth, goal }; };
     let pending = null;
     const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
-    async function asBot(guess) {
-      const rng = CC.rng(Date.now());
-      const name = rng.pick(HANDLES);
+    async function asBot() {
+      const name = HANDLES[Math.floor(Math.random() * HANDLES.length)];
       api.status('Opponent found: ' + name, 'Connecting…');
-      await wait(700 + Math.random() * 900);
-      api.begin({ ai: [false, true], myName, oppName: name, askGuess: guess, oppIsBot: true });
+      await wait(800 + Math.random() * 1200);
+      api.begin({ ai: [false, true], myName, oppName: name, myRole: role() });
     }
-    async function handshake(link, guess) {
+    async function handshake(link) {
       api.status('Opponent found!', 'Connecting…');
-      await wait(1500 + Math.random() * 1500); // no match ever connects instantly
-      const roll = Math.random();
-      link.send({ t: 'hello', name: myName, roll });
+      await wait(1500 + Math.random() * 1500); // never instant
+      link.send({ t: 'hello', name: myName });
       const hello = await new Promise((res, rej) => {
-        const to = setTimeout(() => rej(new Error('Handshake timed out')), 8000);
+        const to = setTimeout(() => rej(new Error('Handshake timed out')), 10000);
         link.onMessage((m) => { if (m && m.t === 'hello') { clearTimeout(to); res(m); } });
       });
-      const starts = roll > hello.roll ? 0 : 1;
-      api.begin({ ai: [false, true], myName, oppName: String(hello.name || 'stranger').slice(0, 16), askGuess: guess, oppIsBot: false, link, starts });
+      api.begin({ ai: [false, true], myName, oppName: String(hello.name || 'stranger').slice(0, 16), myRole: role(), link });
     }
 
     panel.addEventListener('click', async (ev) => {
@@ -266,35 +460,32 @@
       const token = (api.token = Math.random());
       const alive = () => api.token === token;
       try {
-        if (m === 'watch') { api.begin({ ai: [true, true], myName: 'CPU-A', oppName: 'CPU-B', askGuess: false, oppIsBot: true }); return; }
+        if (m === 'watch') { api.begin({ ai: [true, true], myName: 'Bot A', oppName: 'Bot B', myRole: { truth: 'ai', goal: 'human' } }); return; }
         if (m === 'practice') {
-          api.status('Setting up a practice match…');
-          await wait(1500 + Math.random() * 1500);
-          if (alive()) api.begin({ ai: [false, true], myName, oppName: 'Computer', askGuess: false, oppIsBot: true });
+          api.status('Setting up a practice chat…', 'Your partner is the computer');
+          await wait(1200 + Math.random() * 1200);
+          if (alive()) api.begin({ ai: [false, true], myName, oppName: 'Computer', myRole: role() });
           return;
         }
         if (m === 'online') {
-          const minWait = wait(2500 + Math.random() * 2500); // never instant
+          const minWait = wait(3000 + Math.random() * 3000);
           const searchFor = 12000 + Math.random() * 9000;
           let found = null;
           if (CC.Net && CC.Net.available()) {
-            pending = CC.Net.findMatch({ timeoutMs: searchFor, onStatus: (s) => alive() && api.status(s, 'Online players are matched first') });
+            pending = CC.Net.findMatch({ timeoutMs: searchFor, onStatus: (s) => alive() && api.status(s, 'Looking for another player…') });
             found = await pending.catch(() => null);
-          } else {
-            api.status('Searching for players…');
-            await wait(searchFor * 0.5);
-          }
+          } else { api.status('Searching for players…'); await wait(searchFor * 0.5); }
           await minWait;
-          if (!alive()) { found && found.link.close(); return; }
-          if (found) await handshake(found.link, true); else await asBot(true);
+          if (!alive()) { if (found) found.link.close(); return; }
+          if (found) await handshake(found.link); else await asBot();
           return;
         }
         if (m === 'host') {
-          const code = Array.from({ length: 4 }, () => 'ABCDEFGHJKLMNPQRSTUVWXYZ'[Math.floor(Math.random() * 24)]).join('');
           if (!CC.Net || !CC.Net.available()) throw new Error('Online play could not load (PeerJS blocked?).');
+          const code = Array.from({ length: 4 }, () => 'ABCDEFGHJKLMNPQRSTUVWXYZ'[Math.floor(Math.random() * 24)]).join('');
           api.status('Room code: ' + code, 'Opening room…');
           const r = await CC.Net.hostRoom(code, (s) => alive() && api.status('Room code: ' + code, s));
-          if (alive()) await handshake(r.link, false);
+          if (alive()) await handshake(r.link);
           return;
         }
         if (m === 'join') {
@@ -302,7 +493,7 @@
           if (code.length !== 4) throw new Error('Enter the 4-letter room code.');
           if (!CC.Net || !CC.Net.available()) throw new Error('Online play could not load (PeerJS blocked?).');
           const r = await CC.Net.joinRoom(code, (s) => alive() && api.status(s));
-          if (alive()) await handshake(r.link, false);
+          if (alive()) await handshake(r.link);
         }
       } catch (e) {
         if (alive()) api.status('Could not connect', e.message || String(e), true);
@@ -312,14 +503,13 @@
 
   CC.register({
     id: 'imitation', name: 'Imitation', color: '#ff4d6d', glyph: '◉',
-    blurb: 'A memory duel. Repeat the sequence and add one pad. Play the computer, a friend in another browser, or a stranger. Can you tell which one you got?',
+    blurb: 'The Imitation Game. Chat with a stranger for 2½ minutes, then guess: human or AI? Humans can try to pass as AIs, and the AI tries to pass as human.',
     roles: [
-      { name: 'You', controls: 'Arrow keys, 1–4, or click the pads' },
-      { name: 'Opponent', controls: 'A human in another browser, or the computer' },
+      { name: 'You', controls: 'Type and press Enter. Choose whether to act human or pretend to be an AI' },
+      { name: 'Opponent', controls: 'A human in another browser, Claude in Chrome, or the built-in computer player' },
     ],
-    goals: 'Don\'t be the first to slip up. Each pad has a time limit.',
-    custom: true,
-    mount,
-    create,
+    goals: 'Score 1 point for guessing right about your partner, and 1 point if their guess about you matches your goal.',
+    custom: true, balance: false,
+    mount, create,
   });
 })();

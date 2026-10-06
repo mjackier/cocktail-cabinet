@@ -35,13 +35,13 @@ for (const def of CC.games) {
       failed = true; break;
     }
     if (!g.over) timeouts++;
-    else wins[g.result.winner]++;
+    else if (g.result.winner >= 0) wins[g.result.winner]++;
     totalT += t;
     if (samples.length < 4 && g.stats) samples.push(JSON.stringify(g.stats()));
   }
   const pct = (n) => ((100 * n) / N).toFixed(0) + '%';
   console.log(`${def.name.padEnd(16)} ${def.roles[0].name} ${pct(wins[0])}  ${def.roles[1].name} ${pct(wins[1])}  unfinished ${timeouts}  avg ${(totalT / N / 60).toFixed(1)} min`);
   for (const s of samples) console.log('    ' + s);
-  if (timeouts > 0 || Math.min(...wins) < N * 0.15) { console.log('    ⚠ balance outside 15–85% or unfinished matches'); failed = true; }
+  if (timeouts > 0 || (def.balance !== false && Math.min(...wins) < N * 0.15)) { console.log('    ⚠ balance outside 15–85% or unfinished matches'); failed = true; }
 }
 process.exit(failed ? 1 : 0);

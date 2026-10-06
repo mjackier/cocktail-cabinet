@@ -74,7 +74,7 @@
   // ---------------- state ----------------
   let current = null, inst = null, paused = false, sides = [false, true], lastOpts = null;
   const playing = () => inst && !inst.over && !paused;
-  const overlay = $('#overlay');
+  const overlay = $('#overlay'), domlayer = $('#domlayer');
 
   function showOverlay(html) { overlay.innerHTML = html; overlay.hidden = false; }
   function hideOverlay() { overlay.hidden = true; overlay.innerHTML = ''; }
@@ -160,7 +160,8 @@
     paused = false;
     hideOverlay();
     if (!current.custom) renderPanel();
-    canvas.focus();
+    domlayer.innerHTML = '';
+    if (inst.dom) { domlayer.appendChild(inst.dom); if (inst.focus) inst.focus(); } else canvas.focus();
   }
   function togglePause() {
     paused = !paused;
@@ -171,12 +172,12 @@
     const r = inst.result, ai = lastOpts.ai, def = current;
     const humans = ai.filter((x) => !x).length;
     let head;
-    if (def.custom) head = r.winner === 0 ? (ai[0] ? 'CPU-A wins' : 'You win!') : (ai[0] ? 'CPU-B wins' : 'You lose');
+    if (def.custom) head = r.head || (r.winner === 0 ? 'You win!' : 'You lose');
     else if (humans === 1) head = !ai[r.winner] ? 'You win!' : 'The computer wins';
     else head = def.roles[r.winner].name + ' wins!';
     const sub = def.custom ? '' : `${def.roles[r.winner].name} (${sideLabel(ai[r.winner])}) wins.`;
     showOverlay(`<div class="ov"><h2>${esc(head)}</h2><p>${esc(r.reason)}</p>${sub ? `<p class="fine">${esc(sub)}</p>` : ''}
-      <div class="row">${def.custom ? '<button class="btn primary" data-act="again-custom">Back to match options</button>'
+      <div class="row">${def.custom ? '<button class="btn primary" data-act="again-custom">New match</button>'
         : '<button class="btn primary" data-act="again">Play again</button><button class="btn" data-act="swap">Swap sides</button>'}</div></div>`);
   }
   overlay.addEventListener('click', (e) => {
@@ -184,7 +185,7 @@
     const a = b.dataset.act;
     if (a === 'start' || a === 'again') start();
     if (a === 'swap') { sides = [sides[1], sides[0]]; renderPanel(); start(); }
-    if (a === 'again-custom') { inst = null; hideOverlay(); showOverlay('<div class="ov"><h2>Imitation</h2><p>Choose how to play on the right.</p></div>'); }
+    if (a === 'again-custom') { inst = null; domlayer.innerHTML = ''; hideOverlay(); showOverlay('<div class="ov"><h2>Imitation</h2><p>Choose how to play on the right.</p></div>'); }
   });
 
   // ---------------- routing ----------------
@@ -193,7 +194,7 @@
     const def = CC.games.find((g) => g.id === id);
     if (inst && inst.link) inst.link.close();
     customApi.token = Math.random();
-    inst = null; paused = false;
+    inst = null; paused = false; domlayer.innerHTML = '';
     if (!def) { current = null; $('#play').hidden = true; $('#menu-wrap').hidden = false; document.title = 'Cocktail Cabinet'; return; }
     current = def;
     sides = [false, true];
