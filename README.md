@@ -28,7 +28,7 @@ Splat         Flyer 42%     Builder 58%
 Asteroids     Pilot 41%     Thrower 59%
 Missile Cmd   Defender 49%  Attacker 51%
 Tetris        Stacker 50%   Picker 50%
-Shadow Walker Walker 40%    Lightkeeper 60%
+Shadow Walker Walker 51%    Lightkeeper 49%
 Sonar Hunt    Sub 57%       Hunter 43%
 ```
 
@@ -36,9 +36,9 @@ Sonar Hunt    Sub 57%       Hunter 43%
 
 These were added for the "invent a game that doesn't exist" assignment, so there was no standard version to copy.
 
-**Shadow Walker.** Each room, the walker crosses from the left doorway to the right one. Standing in light heats it up and shadow cools it; full heat means burned. Two lamps hang on rails along the top and bottom walls, each lighting a limited circle, and every piece of furniture casts a real shadow from each lamp. The walker needs 6 rooms; the lightkeeper needs 3 burns. Two rules stop either side stalling: a **dawn timer** per room, and **lamps overheat** (going dark for 2.5 s) if they hover in one area instead of sweeping. Each room is faster, with longer-reaching light, quicker burns and less furniture.
+**Shadow Walker.** Each room, the walker crosses from the left doorway to the right one. Standing in light heats it up and shadow cools it; full heat means burned. Two lamps hang on rails along the top and bottom walls, each lighting a limited circle, and every piece of furniture casts a real shadow from each lamp. The walker needs 6 rooms; the lightkeeper needs 3 burns. Two rules stop either side stalling: a **dawn timer** per room, and **lamp batteries**: each lamp stays lit for 6–8 s, then goes dark for 1.8 s to recharge, and the two batteries run out at different times, so the lamps can't seal a doorway forever. The lightkeeper uses **A/D** for the top lamp and **←/→** for the bottom lamp (in a 2-human game the walker moves with **I/J/K/L**). Each room is faster, with longer-reaching light, quicker burns and less furniture.
 - *Computer walker:* plans a route over a 20 px grid with Dijkstra's algorithm. A cell's cost depends on whether any lamp position reachable by the time it arrives would light it. It only stops in cells that stay dark with every lamp on, waits to cool off when a dash would burn it, and ducks into the nearest real shadow when caught.
-- *Computer lightkeeper:* predicts where the walker is going and picks the lamp positions that light that spot and the area around it, and sweeps before a lamp overheats.
+- *Computer lightkeeper:* predicts where the walker is going and picks the lamp positions that light that spot and the area around it.
 
 **Sonar Hunt.** Each round is a new maze. The sub always sees the exit beacon but not the walls. A **ping** (Space) sends out a ring that lights nearby walls for a few seconds and reveals the hunter if it's in range, but the hunter sees exactly where every ping came from. Bumping a wall reveals that wall silently. The hunter knows the whole maze but **not** where the sub or the exit is. Both sides sense each other at very close range. The sub scores by escaping; the hunter scores by catching it or when its air runs out. First to 3. Mazes grow and the hunter gets faster each round.
 - *No cheating, by construction:* the computer sub only reads `sInfo` (walls it has seen or bumped, hunter sightings), and the computer hunter only reads `hInfo` (ping origins and close contacts) plus the maze. Neither function reads the other side's position.

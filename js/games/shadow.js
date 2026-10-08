@@ -4,8 +4,9 @@
    shadows from wherever each lamp is, so the shadows swing as the lamps move.
    Standing in light heats the walker up; shadow cools it down. Full heat = burned.
    The walker wins by crossing 6 rooms. The lightkeeper wins by burning the walker 3 times
-   (each room also has a "dawn" timer, so the walker can't hide forever). Lamps overheat and go
-   dark for a moment if they hover in one place, so the lightkeeper can't just guard a doorway.
+   (each room also has a "dawn" timer, so the walker can't hide forever). Each lamp runs on a battery:
+   it stays lit for a few seconds, then goes dark to recharge, and the two batteries run out at
+   different times. So two lamps can't seal the doorway forever.
    Fairness: both lamps have the same top speed for a human or the computer. The computer walker
    only knows what's on screen (lamp positions, lamp top speed, furniture) and moves at the same
    speed as a human walker; every light check is real line-of-sight geometry. */
@@ -15,7 +16,7 @@
   const CELL = 20, COLS = W / CELL, ROWS = Math.floor((H - TOP) / CELL);
   const SAMP = 25, NS = W / SAMP + 1; // lamp positions along a rail that are pre-computed
   const RAIL_Y = [TOP + 5, H - 5];
-  const COOL_TIME = 1.4, HOVER_SPAN = 160, HOVER_WINDOW = 2.5, OVERHEAT_TIME = 2.5, DARK_TIME = 2.5;
+  const COOL_TIME = 1.4, DARK_TIME = 1.8; // DARK_TIME: how long a lamp is off while its battery recharges
   const cellX = (c) => c * CELL + CELL / 2, cellY = (r) => TOP + r * CELL + CELL / 2;
 
   // Does the segment (x0,y0)-(x1,y1) pass through rectangle k? (Liang–Barsky clipping)
@@ -55,11 +56,12 @@
       lit: false, sel: 0, msg: '', msgT: 0, wb: { t: 0, path: null }, kb: { t: 0 }, sparks: [],
     };
     const prog = () => g.crossing / (CROSSINGS - 1);
-    const lampSpeed = () => CC.lerp(100, 220, prog());
+    const lampSpeed = () => CC.lerp(100, 240, prog());
     const reach = () => CC.lerp(250, 320, prog()); // how far each lamp's light reaches
     const burnTime = () => CC.lerp(1.35, 0.8, prog());
     const nLamps = () => 2;
     const dawnTime = () => CC.lerp(30, 22, prog());
+    const onTime = () => CC.lerp(6, 8, prog()); // seconds a lamp can stay lit on one charge
     const inAlcove = (x) => x < ALCOVE || x > W - ALCOVE;
     const cellOf = (x, y) => CC.clamp(Math.floor((y - TOP) / CELL), 0, ROWS - 1) * COLS + CC.clamp(Math.floor(x / CELL), 0, COLS - 1);
 
@@ -90,10 +92,10 @@
       // exposure[cell] = share of all lamp positions that would light it (good hiding spots are low)
       g.expo = new Float32Array(COLS * ROWS);
       for (let i = 0; i < g.expo.length; i++) { let n = 0; for (let l = 0; l < 2; l++) for (let s = 0; s < NS; s++) n += g.table[l][s][i]; g.expo[i] = n / (2 * NS); }
-      g.lamps = [0, 1].map((l) => { const x = rng.range(350, 700); return { x, tx: x, y: RAIL_Y[l], hist: [], hot: 0, off: 0 }; });
+      g.lamps = [0, 1].map((l) => { const x = rng.range(350, 700); return { x, tx: x, y: RAIL_Y[l], batt: onTime(), off: 0 }; });
+      g.lamps[rng.int(0, 1)].batt *= 0.5; // the two batteries run out at different times
       g.w = { x: ALCOVE / 2, y: rng.range(TOP + 60, H - 60), vx: 0, vy: 0 };
       g.heat = 0; g.dawn = dawnTime(); g.grace = 1.2; g.wb.path = null;
-      if (g.sel >= nLamps()) g.sel = 0;
     }
 
     function litAt(x, y) {
@@ -117,12 +119,17 @@
     // each lamp could be anywhere it can reach in that time (lamp top speed is public), so a cell
     // is risky if any of those positions would light it. A careless walker only looks at where
     // the lamps are right now.
+    // Is lamp L switched off t seconds from now? (Everyone can see the battery bars.)
+    function lampOffAt(L, t) {
+      if (L.off > 0) return t < L.off - 0.3;
+      return t > L.batt + 0.3 && t < L.batt + DARK_TIME - 0.3;
+    }
     function risk(ci, t, careful, scale, ignoreOff) { // scale: how far ahead the walker imagines lamps moving
       const x = cellX(ci % COLS);
       if (x < ALCOVE || x > W - ALCOVE) return 0;
       for (let l = 0; l < nLamps(); l++) {
         const L = g.lamps[l], move = careful ? lampSpeed() * t * (scale == null ? 1 : scale) : 0;
-        if (!ignoreOff && L.off > t + 0.3) continue; // an overheated lamp stays dark for a while (with a safety margin)
+        if (!ignoreOff && lampOffAt(L, t)) continue; // a lamp that will be recharging then can't light anything
         const a = CC.clamp(Math.floor((L.x - move) / SAMP), 0, NS - 1), b = CC.clamp(Math.ceil((L.x + move) / SAMP), 0, NS - 1);
         for (let s = a; s <= b; s++) if (g.table[l][s][ci]) return 1;
       }
@@ -253,8 +260,6 @@
         }
         if (bestTab) for (let j = 0; j < near.length; j++) if (bestTab[near[j]]) covered[j] = 1;
         L.tx = best + rng.gauss() * CC.lerp(70, 12, skill);
-        // Hovering overheats a lamp, so a skilled keeper sweeps before that happens.
-        if (L.hot > CC.lerp(0.85, 0.5, skill)) L.tx = L.x + (L.x < W / 2 ? 1 : -1) * 240;
       }
     }
 
@@ -266,6 +271,7 @@
       g.w.x = ALCOVE / 2; g.w.vx = g.w.vy = 0; g.heat = 0; g.dawn = dawnTime(); g.grace = 1; g.wb.path = null;
     }
 
+    if (o.startRoom) g.crossing = Math.min(o.startRoom, CROSSINGS - 1); // used by tests to jump to a level
     newRoom();
     g._plan = plan; // exposed for tests
 
@@ -276,32 +282,26 @@
       // Lightkeeper
       if (ai[1]) aiKeeper(dt);
       else {
-        if (nLamps() > 1 && (input.clicks.length || (ai[0] && input.pressed('Space')))) g.sel = 1 - g.sel;
-        const L = g.lamps[g.sel];
-        if (input.mouse.inside) L.tx = input.mouse.x;
-        if (ai[0] && input.down('ArrowLeft')) L.tx = L.x - 80;
-        if (ai[0] && input.down('ArrowRight')) L.tx = L.x + 80;
+        // A/D slide the top lamp, ←/→ slide the bottom lamp. Both can move at once.
+        const steer = (L, left, right) => { const d = (input.down(right) ? 1 : 0) - (input.down(left) ? 1 : 0); L.tx = d ? L.x + d * 80 : L.x; };
+        steer(g.lamps[0], 'KeyA', 'KeyD');
+        steer(g.lamps[1], 'ArrowLeft', 'ArrowRight');
       }
       for (let l = 0; l < nLamps(); l++) {
         const L = g.lamps[l], d = CC.clamp(L.tx, 6, W - 6) - L.x, m = lampSpeed() * dt;
         L.x += CC.clamp(d, -m, m);
-        // Overheating: a lamp that hasn't swept HOVER_SPAN px within the last HOVER_WINDOW s heats up.
-        L.hist.push([g.t, L.x]);
-        while (L.hist.length && L.hist[0][0] < g.t - HOVER_WINDOW) L.hist.shift();
-        if (L.off > 0) { L.off -= dt; if (L.off <= 0) { L.hot = 0; L.hist = []; } continue; }
-        let lo = L.x, hi = L.x;
-        for (const h of L.hist) { if (h[1] < lo) lo = h[1]; if (h[1] > hi) hi = h[1]; }
-        const settled = g.t - (L.hist.length ? L.hist[0][0] : g.t) > HOVER_WINDOW * 0.9;
-        if (settled && hi - lo < HOVER_SPAN) L.hot += dt / OVERHEAT_TIME; else L.hot = Math.max(0, L.hot - dt / 2);
-        if (L.hot >= 1) { L.off = DARK_TIME; L.hot = 1; CC.sfx.play('bad'); }
+        // Battery: a lamp stays lit for onTime() seconds, then goes dark for DARK_TIME to recharge.
+        if (L.off > 0) { L.off -= dt; if (L.off <= 0) { L.off = 0; L.batt = onTime(); } }
+        else { L.batt -= dt; if (L.batt <= 0) { L.off = DARK_TIME; CC.sfx.play('bad'); } }
       }
       if (g.grace > 0) { g.grace -= dt; g.lit = false; return; }
       // Walker
       let dx = 0, dy = 0;
       if (ai[0]) [dx, dy] = aiWalker(dt);
       else {
-        dx = (input.down('ArrowRight') || input.down('KeyD') ? 1 : 0) - (input.down('ArrowLeft') || input.down('KeyA') ? 1 : 0);
-        dy = (input.down('ArrowDown') || input.down('KeyS') ? 1 : 0) - (input.down('ArrowUp') || input.down('KeyW') ? 1 : 0);
+        const k = (a, b, c) => input.down(c) || (ai[1] && (input.down(a) || input.down(b))); // arrows/WASD are the lamps' keys in a 2-human game
+        dx = (k('ArrowRight', 'KeyD', 'KeyL') ? 1 : 0) - (k('ArrowLeft', 'KeyA', 'KeyJ') ? 1 : 0);
+        dy = (k('ArrowDown', 'KeyS', 'KeyK') ? 1 : 0) - (k('ArrowUp', 'KeyW', 'KeyI') ? 1 : 0);
       }
       moveWalker(dx, dy, dt);
       g.lit = litAt(g.w.x, g.w.y);
@@ -377,9 +377,9 @@
         if (L.off > 0) { ctx.fillStyle = '#4a3a2a'; ctx.beginPath(); ctx.arc(L.x, L.y, 8, 0, 7); ctx.fill(); }
         else { CC.glow(ctx, '#ffd28c', 24); ctx.fillStyle = '#ffe2a8'; ctx.beginPath(); ctx.arc(L.x, L.y, 8, 0, 7); ctx.fill(); CC.noGlow(ctx); }
         const by = l === 0 ? L.y + 13 : L.y - 17;
-        if (L.off > 0) CC.text(ctx, 'cooling ' + Math.ceil(L.off) + 's', L.x, by + 2, 16, CC.pal.dim, 'center');
-        else if (L.hot > 0.02) CC.bar(ctx, L.x - 18, by, 36, 4, L.hot, L.hot > 0.6 ? CC.pal.a : CC.pal.warn);
-        if (!ai[1] && nLamps() > 1 && l === g.sel) { ctx.strokeStyle = CC.pal.c; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(L.x, L.y, 13, 0, 7); ctx.stroke(); }
+        if (L.off > 0) CC.text(ctx, 'recharging ' + Math.ceil(L.off) + 's', L.x, by + 2, 16, CC.pal.dim, 'center');
+        else CC.bar(ctx, L.x - 18, by, 36, 4, L.batt / onTime(), L.batt < 1.5 ? CC.pal.a : CC.pal.good);
+        if (!ai[1]) CC.text(ctx, l === 0 ? 'A / D' : '← / →', L.x, l === 0 ? L.y + 30 : L.y - 33, 16, CC.pal.c, 'center');
       }
       // walker
       const w = g.w, hot = g.heat;
@@ -402,7 +402,6 @@
         { label: 'Lamp speed / reach', value: Math.round(lampSpeed()) + ' / ' + Math.round(reach()), color: CC.pal.c },
       ]);
       if (g.grace > 0 && !g.over) CC.text(ctx, 'Get ready…', W / 2, H / 2 + 60, 26, CC.pal.text, 'center');
-      if (!ai[1] && !g.over) CC.text(ctx, 'Click to switch lamps', W - 10, H - 18, 18, CC.pal.dim, 'right');
       if (g.msgT > 0) CC.banner(ctx, g.msg, g.msg.startsWith('Room') ? CC.pal.c : CC.pal.a, g.msgT);
     };
     g.stats = () => ({ crossing: g.crossing, lives: g.lives, t: Math.round(g.t) });
@@ -413,10 +412,10 @@
     id: 'shadow', name: 'Shadow Walker', color: '#ffb347', glyph: '☾',
     blurb: 'A creature that burns in light must cross the room through the shadows. The other side slides the lamps, and the shadows swing with them.',
     roles: [
-      { name: 'Walker', controls: 'Arrow keys or WASD. Light heats you up, shadow cools you down' },
-      { name: 'Lightkeeper', controls: 'Move the mouse to slide the selected lamp along its rail. Click (or Space vs a computer walker) to switch between the top and bottom lamp' },
+      { name: 'Walker', controls: 'Arrow keys or WASD (I/J/K/L when two humans play). Light heats you up, shadow cools you down' },
+      { name: 'Lightkeeper', controls: 'A / D slide the top lamp, ← / → slide the bottom lamp. Each lamp\'s battery lasts a few seconds, then it goes dark to recharge' },
     ],
-    goals: 'The walker needs to cross 6 rooms. The lightkeeper needs to burn the walker 3 times. A dawn timer stops the walker hiding forever, and lamps overheat and go dark if they hover in one spot.',
+    goals: 'The walker needs to cross 6 rooms. The lightkeeper needs to burn the walker 3 times. A dawn timer stops the walker hiding forever, and each lamp goes dark to recharge every few seconds.',
     create,
   });
 })();
